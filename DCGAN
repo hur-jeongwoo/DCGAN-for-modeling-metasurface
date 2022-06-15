@@ -1,0 +1,100 @@
+import torch
+import torchvision
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.tensorboard import SummaryWriter
+from model_utils import Discriminator, Generator, initialize_weights
+import pandas as pd
+import numpy as np
+
+
+num_input = 4004
+num_set = 1000
+row = 10
+col = 10
+batch_size = 10
+#data loading part is needed
+df = pd.read_csv('./s-parameter.csv')
+s_par = df.iloc[0:num_set,0:num_input]
+s_par_val = s_par.values
+s_par_val = s_par_val.reshape(batch_size,int(num_set/batch_size),num_input)
+cell_pro = df.iloc[0:num_set,num_input:num_input+row*col]
+cell_value = cell_pro.values
+cell_value = cell_value.reshape(batch_size,int(num_set/batch_size),row,col)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+LEARNING_RATE = 0.0002 # learning rate
+image_size = row*col # mnist is 28x28, so it has to convert to 64x64
+channels_img = 1
+channels_noise = num_input #100 on paper
+num_epochs = 100
+
+features_d = 100
+features_g = 100
+
+#create discriminator and generator
+
+gen = Generator(channels_noise,channels_img,features_g).to(device)
+disc = Discriminator(channels_img,features_d).to(device)
+initialize_weights(gen)
+initialize_weights(disc)
+
+#Setup Optimizer for G and D
+opt_gen = optim.Adam(gen.parameters(),lr=LEARNING_RATE,betas=(0.5,0.999))
+opt_disc = optim.Adam(disc.parameters(),lr=LEARNING_RATE,betas=(0.5,0.999))
+
+criterion=nn.BCELoss()
+
+fixed_noise = torch.Tensor(s_par_val[torch.randint(batch_size,size=(1,)),:,:].reshape(int(num_set/batch_size),num_input,1,1))
+writer_real = SummaryWriter(f"logs/real")
+writer_fake = SummaryWriter(f"logs/fake")
+step = 0
+
+gen.train()
+disc.train()
+
+print("starting training...")
+
+for epoch in range(num_epochs):
+    for batch_idx,real in enumerate(cell_value):
+        real = torch.Tensor(real.reshape(int(num_set/batch_size),1,row,col))
+        noise = torch.Tensor(s_par_val[torch.randint(batch_size,size=(1,)),:,:].reshape(int(num_set/batch_size),num_input,1,1))
+        fake = gen(noise)
+        
+        # Train Discriminator : max log(d(x)) + log(1- D(G(z)))
+        disc_real = disc(real).reshape(-1)
+        loss_disc_real = criterion(disc_real, torch.ones_like(disc_real))
+        disc_fake = disc(fake).reshape(-1)
+        loss_disc_fake = criterion(disc_fake, torch.zeros_like(disc_fake))
+        loss_disc = (loss_disc_real + loss_disc_fake)/2
+        disc.zero_grad()
+        loss_disc.backward(retain_graph=True)
+        opt_disc.step()
+        
+        
+        output = disc(fake).reshape(-1)
+        loss_gen = criterion(output, torch.ones_like(output))
+        gen.zero_grad()
+        loss_gen.backward()
+        opt_gen.step()
+        
+        if batch_idx == (batch_size-1):
+            print(
+                f"Epoch [{epoch}/{num_epochs}] Loss D: {loss_disc:.4f}, loss G: {loss_gen:.4f}"        
+            )
+            
+            with torch.no_grad():
+                fake = gen(fixed_noise)
+                
+                img_grid_real = torchvision.utils.make_grid(
+                    real[:5], normalize=True
+                )
+                
+                img_grid_fake = torchvision.utils.make_grid(
+                    fake[:5], normalize=True
+                )
+                writer_real.add_image("Real",img_grid_real,global_step=step)
+                writer_fake.add_image("fake",img_grid_real,global_step=step)
+                
+            step += 1
